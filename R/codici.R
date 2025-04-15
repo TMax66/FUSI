@@ -8,23 +8,6 @@ dt <- read_excel(here("dati","Registro_carico_scarico_Scalvini_2014-2023_27.05.2
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 # anno periodo 
 # questo codice serve per definire l'età degli individui in un determinato periodo di tempo 
 # cioè "anno di osservazione"... ad esempio dal dataset ho per ogni bovina la data di nascita, 
@@ -38,6 +21,7 @@ dt <- read_excel(here("dati","Registro_carico_scarico_Scalvini_2014-2023_27.05.2
 
 dt %>% 
   clean_names() %>% 
+  filter(sesso == "F") %>% 
   select(codice_capo, 
          data_nascita, 
          data_ingresso,
@@ -58,98 +42,56 @@ dt %>%
 
 
 
-calcola_statistiche_annuali_con_mortalita <- function(bovini) {
-  library(dplyr)
-  library(lubridate)
-  
-  anni <- 2017:2024
-  
-  risultati <- lapply(anni, function(anno) {
-    inizio_anno <- as.Date(paste0(anno, "-01-01"))
-    fine_anno <- as.Date(paste0(anno, "-12-31"))
-    
-    # Presenti nel corso dell’anno
-    presenti <- bovini %>%
-      filter(data_ingresso <= fine_anno & (is.na(data_uscita) | data_uscita >= inizio_anno)) %>%
-      nrow()
-    
-    # Usciti durante l’anno
-    usciti <- bovini %>%
-      filter(!is.na(data_uscita) & year(data_uscita) == anno) %>%
-      nrow()
-    
-    # Morti durante l’anno
-    morti <- bovini %>%
-      filter(!is.na(data_uscita) & year(data_uscita) == anno & motivo_uscita == "M") %>%
-      nrow()
-    
-    # Tasso di mortalità (%)
-    tasso_mortalita <- ifelse(presenti > 0, (morti / presenti) * 100, NA)
-    
-    data.frame(
-      anno = anno,
-      presenti = presenti,
-      usciti = usciti,
-      morti = morti,
-      tasso_mortalita = round(tasso_mortalita, 2)
-    )
-  })
-  
-  bind_rows(risultati)
-}
-
-  
 
 
 
-calcola_statistiche_complete <- function(bovini) {
-  library(dplyr)
-  library(lubridate)
-  
-  anni <- 2017:2024
-  
-  risultati <- lapply(anni, function(anno) {
-    inizio_anno <- as.Date(paste0(anno, "-01-01"))
-    fine_anno <- as.Date(paste0(anno, "-12-31"))
-    
-    # Calcolo giorni di permanenza durante l’anno
-    bovini_anno <- bovini %>%
-      mutate(
-        start = pmax(data_ingresso, inizio_anno, na.rm = TRUE),
-        end = pmin(coalesce(data_uscita, fine_anno), fine_anno, na.rm = TRUE),
-        giorni_presenza = as.numeric(end - start + 1)
-      ) %>%
-      filter(giorni_presenza > 0)
-    
-    giorni_totali <- sum(bovini_anno$giorni_presenza)
-    presenti_equivalenti <- round(giorni_totali / 365, 2)
-    
-    usciti <- bovini %>%
-      filter(!is.na(data_uscita) & year(data_uscita) == anno) %>%
-      nrow()
-    
-    morti <- bovini %>%
-      filter(!is.na(data_uscita) & year(data_uscita) == anno & motivo_uscita == "M") %>%
-      nrow()
-    
-    tasso_mortalita <- ifelse(presenti_equivalenti > 0, (morti / presenti_equivalenti) * 100, NA)
-    
-    data.frame(
-      anno = anno,
-      presenti_equivalenti = presenti_equivalenti,
-      usciti = usciti,
-      morti = morti,
-      tasso_mortalita = round(tasso_mortalita, 2)
-    )
-  })
-  
-  bind_rows(risultati)
-}
 
+ calcola_statistiche_complete <- function(dati) {
+   library(dplyr)
+   library(lubridate)
+   
+   anni <- 2017:2024
+   risultati <- data.frame()
+   
+   for (anno in anni) {
+     inizio_anno <- as.Date(paste0(anno, "-01-01"))
+     fine_anno   <- as.Date(paste0(anno, "-12-31"))
+     
+     dati_anno <- dati %>%
+       mutate(
+         inizio_eff = pmax(data_ingresso, inizio_anno),
+         fine_eff   = pmin(coalesce(data_uscita, fine_anno), fine_anno),
+         giorni_presenti = as.numeric(fine_eff - inizio_eff + 1),
+         giorni_validi = if_else(giorni_presenti > 0, giorni_presenti, 0),
+         presente_nell_anno = (data_ingresso <= fine_anno & (is.na(data_uscita) | data_uscita >= inizio_anno))
+       )
+     
+     presenti <- sum(dati_anno$presente_nell_anno)
+     presenti_effettivi <- round(sum(dati_anno$giorni_validi, na.rm = TRUE) / 365.25, 2)
+     
+     usciti <- sum(!is.na(dati$data_uscita) & year(dati$data_uscita) == anno)
+     morti  <- sum(dati$motivo_uscita == "M" & year(dati$data_uscita) == anno)
+     
+     risultati <- rbind(risultati, data.frame(
+       anno = anno,
+       presenti = presenti,
+       presenti_effettivi = presenti_effettivi,
+       usciti = usciti,
+       morti = morti,
+       tasso_mortalita_classico = round(morti / presenti, 4),
+       tasso_mortalita_ponderato = round(morti / presenti_effettivi, 4)
+     ))
+   }
+   
+   return(risultati)
+ }
+
+ 
+ 
 dati %>% 
   select(codice_capo, data_ingresso, data_uscita, motivo_uscita, data_nascita)-> dt
 
-
+ 
 calcola_statistiche_complete(dt)
 
 
@@ -180,12 +122,89 @@ ggplot(bovini_plot) +
              size = 2) +
   scale_color_manual(values = c("morto" = "red", "uscito" = "blue")) +
   labs(
-    title = "Diagramma di Lexis - Bovini (senza uscite 2024)",
+    title = "Diagramma di Lexis",
     x = "Anno di calendario",
     y = "Età (anni)",
     color = "Evento finale"
   ) +
   theme_minimal()
+
+
+
+
+
+###ANALISI PER COORTE
+
+calcola_mortalita_per_coorte_temporale <- function(dati) {
+  library(dplyr)
+  library(lubridate)
+  
+  dati %>%
+    mutate(
+      anno_nascita = year(data_nascita),
+      presente = !is.na(data_ingresso),
+      morto = motivo_uscita == "M",
+      data_uscita_corr = coalesce(data_uscita, as.Date("2024-12-31")),
+      giorni_presenza = as.numeric(data_uscita_corr - data_ingresso + 1),
+      giorni_presenza = if_else(giorni_presenza > 0, giorni_presenza, 0)
+    ) %>%
+    group_by(anno_nascita) %>%
+    summarise(
+      individui = n(),
+      presenti = sum(presente, na.rm = TRUE),
+      morti = sum(morto, na.rm = TRUE),
+      giorni_totali = sum(giorni_presenza, na.rm = TRUE),
+      anni_bovino = round(giorni_totali / 365.25, 2),
+      tasso_mortalita_temporale = round(morti / anni_bovino, 4),
+      .groups = "drop"
+    ) %>%
+    arrange(anno_nascita)
+}
+
+
+
+calcola_mortalita_per_coorte_temporale(dt)->coorti
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -506,3 +525,46 @@ ggplot(bovini_plot) +
 #                        y = c(1, 1, 2))
 # 
 # lexis_polygon(lx, x = polygons$x, y = polygons$y, group = polygons$group)
+# 
+# 
+# # calcola_statistiche_annuali_con_mortalita <- function(bovini) {
+#   library(dplyr)
+#   library(lubridate)
+#   
+#   anni <- 2017:2024
+#   
+#   risultati <- lapply(anni, function(anno) {
+#     inizio_anno <- as.Date(paste0(anno, "-01-01"))
+#     fine_anno <- as.Date(paste0(anno, "-12-31"))
+#     
+#     # Presenti nel corso dell’anno
+#     presenti <- bovini %>%
+#       filter(data_ingresso <= fine_anno & (is.na(data_uscita) | data_uscita >= inizio_anno)) %>%
+#       nrow()
+#     
+#     # Usciti durante l’anno
+#     usciti <- bovini %>%
+#       filter(!is.na(data_uscita) & year(data_uscita) == anno) %>%
+#       nrow()
+#     
+#     # Morti durante l’anno
+#     morti <- bovini %>%
+#       filter(!is.na(data_uscita) & year(data_uscita) == anno & motivo_uscita == "M") %>%
+#       nrow()
+#     
+#     # Tasso di mortalità (%)
+#     tasso_mortalita <- ifelse(presenti > 0, (morti / presenti) * 100, NA)
+#     
+#     data.frame(
+#       anno = anno,
+#       presenti = presenti,
+#       usciti = usciti,
+#       morti = morti,
+#       tasso_mortalita = round(tasso_mortalita, 2)
+#     )
+#   })
+#   
+#   bind_rows(risultati)
+# }
+# 
+#  calcola_statistiche_annuali_con_mortalita(dt) 
