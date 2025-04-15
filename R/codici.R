@@ -5,9 +5,6 @@ library(Epi)
 dt <- read_excel(here("dati","Registro_carico_scarico_Scalvini_2014-2023_27.05.2024.xlsx"), 
                                          sheet = "Registro carico-scarico 2014-23")
 
-
-
-
 # anno periodo 
 # questo codice serve per definire l'età degli individui in un determinato periodo di tempo 
 # cioè "anno di osservazione"... ad esempio dal dataset ho per ogni bovina la data di nascita, 
@@ -142,7 +139,7 @@ calcola_mortalita_per_coorte_temporale <- function(dati) {
   dati %>%
     mutate(
       anno_nascita = year(data_nascita),
-      presente = !is.na(data_ingresso),
+      #presente = !is.na(data_ingresso),
       morto = motivo_uscita == "M",
       data_uscita_corr = coalesce(data_uscita, as.Date("2024-12-31")),
       giorni_presenza = as.numeric(data_uscita_corr - data_ingresso + 1),
