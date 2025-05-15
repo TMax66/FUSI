@@ -139,7 +139,7 @@ calcola_mortalita_per_coorte_temporale <- function(dati) {
   dati %>%
     mutate(
       anno_nascita = year(data_nascita),
-      #presente = !is.na(data_ingresso),
+      presente = !is.na(data_ingresso),
       morto = motivo_uscita == "M",
       data_uscita_corr = coalesce(data_uscita, as.Date("2024-12-31")),
       giorni_presenza = as.numeric(data_uscita_corr - data_ingresso + 1),
@@ -147,7 +147,7 @@ calcola_mortalita_per_coorte_temporale <- function(dati) {
     ) %>%
     group_by(anno_nascita) %>%
     summarise(
-      individui = n(),
+      #individui = n(),
       presenti = sum(presente, na.rm = TRUE),
       morti = sum(morto, na.rm = TRUE),
       giorni_totali = sum(giorni_presenza, na.rm = TRUE),
@@ -165,36 +165,173 @@ calcola_mortalita_per_coorte_temporale(dt)->coorti
 
 
 
+# Life table
+# 
+
+costruisci_tabella_mortalita <- function(dati, data_fine = as.Date("2024-05-27")) {
+  library(dplyr)
+  library(lubridate)
+  
+  # Step 1: Prepara i dati
+  dati_prep <- dati %>%
+    mutate(
+      data_fine_osservazione = pmin(coalesce(data_uscita, data_fine), data_fine),
+      morto = motivo_uscita == "M" & !is.na(data_uscita) & data_uscita <= data_fine,
+      eta_morte = as.numeric(data_fine_osservazione - data_nascita) / 365.25,
+      evento = ifelse(morto, 1, 0)
+    )
+  
+  # Step 2: Intervalli di età annuali
+  max_eta <- floor(max(dati_prep$eta_morte, na.rm = TRUE))
+  intervalli <- 0:max_eta
+  
+  # Step 3: Crea tabella base
+  tabella <- data.frame(età = intervalli) %>%
+    rowwise() %>%
+    mutate(
+      n = sum(dati_prep$eta_morte >= età, na.rm = TRUE),
+      d = sum(
+        dati_prep$evento == 1 &
+          dati_prep$eta_morte >= età &
+          dati_prep$eta_morte < età + 1,
+        na.rm = TRUE
+      )
+    ) %>%
+    ungroup() %>%
+    mutate(
+      qx = ifelse(n > 0, d / n, 0),  # se n==0, forza qx = 0
+      lx = NA_real_,
+      dx = NA_real_,
+      Lx = NA_real_,
+      Tx = NA_real_,
+      ex = NA_real_
+    )
+  
+  # Step 4: Calcolo delle colonne demografiche
+  tabella$lx[1] <- 100000  # base iniziale standardizzata
+  
+  for (i in 1:nrow(tabella)) {
+    if (i > 1) {
+      tabella$lx[i] <- tabella$lx[i - 1] * (1 - tabella$qx[i - 1])
+    }
+    tabella$dx[i] <- tabella$lx[i] * tabella$qx[i]
+    tabella$Lx[i] <- tabella$lx[i] - tabella$dx[i] / 2
+  }
+  
+  # Step 5: Calcolo Tx ed ex
+  tabella <- tabella %>%
+    mutate(
+      Tx = rev(cumsum(rev(Lx))),
+      ex = ifelse(lx > 0, Tx / lx, NA)
+    )
+  
+  return(tabella)
+}
+
+costruisci_tabella_mortalita(dati)
 
 
 
+#### funzione per costruire lexis plot variabile
+
+library(ggplot2)
+library(dplyr)
+library(lubridate)
+
+library(ggplot2)
+library(dplyr)
+library(lubridate)
+library(ggplot2)
+library(dplyr)
+library(lubridate)
+
+library(ggplot2)
+library(dplyr)
+library(lubridate)
+
+library(ggplot2)
+library(dplyr)
+library(lubridate)
+
+lexis_plot_highlight_full <- function(dt, highlight_type = NULL, highlight_value = NULL) {
+  
+  # Prepara i dati
+  bovini_plot <- dt %>%
+    mutate(
+      data_uscita_plot = coalesce(data_uscita, as.Date("2024-12-31")),
+      stato_fine = case_when(
+        is.na(data_uscita) ~ "presente",
+        motivo_uscita == "M" ~ "morto",
+        TRUE ~ "uscito"
+      ),
+      eta_ingresso = as.numeric(difftime(data_ingresso, data_nascita, units = "days")) / 365.25,
+      eta_uscita   = as.numeric(difftime(data_uscita_plot, data_nascita, units = "days")) / 365.25,
+      anno_ingresso = year(data_ingresso),
+      anno_uscita  = year(data_uscita_plot),
+      coorte = year(data_nascita)
+    )
+  
+  # Evidenziazione sicura
+  if (is.null(highlight_type) || is.null(highlight_value)) {
+    bovini_plot <- bovini_plot %>%
+      mutate(evidenziato = "no")
+  } else {
+    bovini_plot <- bovini_plot %>%
+      mutate(
+        evidenziato = case_when(
+          highlight_type == "coorte" & coorte == highlight_value ~ "si",
+          highlight_type == "periodo" & anno_ingresso <= highlight_value & anno_uscita >= highlight_value ~ "si",
+          highlight_type == "età" & eta_ingresso <= highlight_value & eta_uscita >= highlight_value ~ "si",
+          TRUE ~ "no"
+        )
+      )
+  }
+  
+  # Divido i dati per segmenti e punti
+  segmenti <- bovini_plot
+  punti <- filter(bovini_plot, !is.na(data_uscita) & anno_uscita < 2024)
+  
+  # Plot
+  p <- ggplot() +
+    # Segmenti
+    geom_segment(data = segmenti, 
+                 aes(x = data_ingresso, xend = data_uscita_plot,
+                     y = eta_ingresso, yend = eta_uscita,
+                     color = evidenziato),
+                 size = 1) +
+    scale_color_manual(
+      name = "Evidenziato",
+      values = c("si" = "red", "no" = "gray60")
+    ) +
+    
+    # Punti
+    geom_point(data = punti,
+               aes(x = data_uscita_plot, y = eta_uscita, shape = stato_fine),
+               size = 2) +
+    scale_shape_manual(
+      name = "Evento finale",
+      values = c("morto" = 4, "uscito" = 16, "presente" = 1)
+    ) +
+    
+    labs(
+      title = "Diagramma di Lexis",
+      subtitle = ifelse(!is.null(highlight_type), paste0("Highlight: ", highlight_type, " = ", highlight_value), NULL),
+      x = "Anno di calendario",
+      y = "Età (anni)"
+    ) +
+    theme_minimal() +
+    theme(
+      legend.title = element_text(size = 12),
+      legend.position = "bottom",
+      plot.title = element_text(size = 16, face = "bold"),
+      plot.subtitle = element_text(size = 12, face = "italic")
+    )
+  
+  return(p)
+}
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+lexis_plot_highlight_full(dt)
 
 
 
