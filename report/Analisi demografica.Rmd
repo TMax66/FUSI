@@ -13,15 +13,15 @@ library(ggplot2)
 library(survival)
 library(survminer)
 library(scales)
-library(Epi)
+#library(Epi)
 ```
 
 ## Caricamento dati
 
 ```{r}
 pkg() 
-library(LexisPlotR)
-library(Epi)
+#library(LexisPlotR)
+#library(Epi)
 
 dt <- read_excel(here("dati","Registro_carico_scarico_Scalvini_2014-2023_27.05.2024.xlsx"),sheet = "Registro carico-scarico 2014-23")
 
@@ -348,6 +348,8 @@ lexis_highlight_eta(dt, eta_min = 2, eta_max = 4)
 
 
 
+
+
 ## Preprocessing e costruzione life table
 
 ```{r}
@@ -410,8 +412,6 @@ tabella_sopravvivenza <- life_table(dati)
 tabella_sopravvivenza
 
 ```
-
-
 
 # grafico di qx
 
@@ -570,31 +570,37 @@ ggplot(tabella_apc, aes(x = anno, y = eta, fill = tasso_mortalita)) +
 ```
 
 
-# campiono dal dataset iniziale le matricole per simulare 5 differenti allevamenti con consistenza diverse per poi applicare quanto
-visto sopra 
+# campiono dal dataset iniziale le matricole per simulare 5 differenti allevamenti con consistenza diverse per poi applicare quanto visto sopra 
 ```{r}
 
 set.seed(1966)
-dt %>% 
+dati %>% 
   sample_n(459) %>% 
-  saveRDS(here("dati", "herdA"))
+  saveRDS(here("dati", "herdA.RDS"))
  
-dt %>% 
+dati %>% 
 sample_n(200)  %>% 
-  saveRDS(here("dati", "herdB"))
+  saveRDS(here("dati", "herdB.RDS"))
  
-dt %>% 
+dati %>% 
 sample_n(50) %>% 
-  saveRDS(here("dati", "herdC"))
+  saveRDS(here("dati", "herdC.RDS"))
 
-dt %>% 
+dati %>% 
   sample_n(150) %>% 
-  saveRDS(here("dati", "herdD"))
+  saveRDS(here("dati", "herdD.RDS"))
 
-dt %>% 
+dati %>% 
   sample_n(625) %>% 
-  saveRDS(here("dati", "herdE"))
+  saveRDS(here("dati", "herdE.RDS"))
 
- 
 ```
+
+```{r}
+herdA <- readRDS(here("dati", "herdA.RDS"))
+
+analizza_allevamento(herdA)
+
+```
+
 

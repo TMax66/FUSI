@@ -2,6 +2,22 @@
 library(dplyr)
 library(lubridate)
 
+
+prep_herd <- function(dati, data_fine = as.Date("2024-05-27")) {
+  
+  
+  dati %>%
+    mutate(
+      data_fine_osservazione = pmin(coalesce(data_uscita, data_fine), data_fine),
+      morto = motivo_uscita == "M" & !is.na(data_uscita) & data_uscita <= data_fine,
+      eta_morte = as.numeric(data_fine_osservazione - data_nascita) / 365.25,
+      evento = ifelse(morto, 1, 0)
+    )
+  
+}
+
+
+
 # Funzione per analizzare un singolo allevamento
 analizza_allevamento <- function(df_allevamento) {
   # Calcola il numero di anni di osservazione
