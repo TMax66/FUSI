@@ -1,0 +1,600 @@
+---
+title: "Analisi della mortalità nei bovini dell'allevamento"
+author: "Analisi demografica"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(lubridate)
+library(ggplot2)
+library(survival)
+library(survminer)
+library(scales)
+library(Epi)
+```
+
+## Caricamento dati
+
+```{r}
+pkg() 
+library(LexisPlotR)
+library(Epi)
+
+dt <- read_excel(here("dati","Registro_carico_scarico_Scalvini_2014-2023_27.05.2024.xlsx"),sheet = "Registro carico-scarico 2014-23")
+
+dt %>% 
+  clean_names() %>% 
+  filter(sesso == "F") %>% 
+  select(codice_capo, 
+         data_nascita, 
+         data_ingresso,
+         data_uscita_stalla,
+         motivo_ingresso, 
+         motivo_uscita, 
+         data_estrazione_dati) %>% 
+  mutate(
+    data_nascita = as.Date(data_nascita),
+    data_ingresso = as.Date(data_ingresso),
+    data_uscita = as.Date(data_uscita_stalla),
+    eta_ingresso = as.numeric(difftime(data_ingresso, data_nascita, units = "days")) / 365.25, # Età in anni
+    eta_uscita = as.numeric(difftime(data_uscita, data_nascita, units = "days")) / 365.25, # Età in anni
+    year_ingresso = as.numeric(format(data_ingresso, "%Y")), # Anno di ingresso
+    year_uscita = as.numeric(format(data_uscita, "%Y")) # Anno di uscita
+  ) -> dati
+  
+
+
+
+```
+
+## tasso di mortalità
+
+```{r}
+ calcola_statistiche_complete <- function(dati) {
+   library(dplyr)
+   library(lubridate)
+   
+   anni <- 2017:2024
+   risultati <- data.frame()
+   
+   for (anno in anni) {
+     inizio_anno <- as.Date(paste0(anno, "-01-01"))
+     fine_anno   <- as.Date(paste0(anno, "-12-31"))
+     
+     dati_anno <- dati %>%
+       mutate(
+         inizio_eff = pmax(data_ingresso, inizio_anno),
+         fine_eff   = pmin(coalesce(data_uscita, fine_anno), fine_anno),
+         giorni_presenti = as.numeric(fine_eff - inizio_eff + 1),
+         giorni_validi = if_else(giorni_presenti > 0, giorni_presenti, 0),
+         presente_nell_anno = (data_ingresso <= fine_anno & (is.na(data_uscita) | data_uscita >= inizio_anno))
+       )
+     
+     presenti <- sum(dati_anno$presente_nell_anno)
+     presenti_effettivi <- round(sum(dati_anno$giorni_validi, na.rm = TRUE) / 365.25, 2)
+     
+     usciti <- sum(!is.na(dati$data_uscita) & year(dati$data_uscita) == anno)
+     morti  <- sum(dati$motivo_uscita == "M" & year(dati$data_uscita) == anno)
+     
+     risultati <- rbind(risultati, data.frame(
+       anno = anno,
+       presenti = presenti,
+       presenti_effettivi = presenti_effettivi,
+       usciti = usciti,
+       morti = morti,
+       tasso_mortalita_classico = round(morti / presenti, 4),
+       tasso_mortalita_ponderato = round(morti / presenti_effettivi, 4)
+     ))
+   }
+   
+   return(risultati)
+ }
+
+ 
+ 
+dati %>% 
+  select(codice_capo, data_ingresso, data_uscita, motivo_uscita, data_nascita)-> dt
+
+ 
+calcola_statistiche_complete(dt)
+```
+
+
+
+```{r}
+bovini_plot <-dt %>%
+  mutate(
+    data_uscita_plot = coalesce(data_uscita, as.Date("2024-12-31")),
+    stato_fine = case_when(
+      is.na(data_uscita) ~ "presente",
+      motivo_uscita == "M" ~ "morto",
+      TRUE ~ "uscito"
+    ),
+    eta_ingresso = as.numeric(difftime(data_ingresso, data_nascita, units = "days")) / 365.25,
+    eta_uscita   = as.numeric(difftime(data_uscita_plot, data_nascita, units = "days")) / 365.25,
+    anno_uscita  = year(data_uscita)
+  )
+
+ggplot(bovini_plot) +
+  geom_segment(aes(x = data_ingresso, xend = data_uscita_plot,
+                   y = eta_ingresso, yend = eta_uscita),
+               color = "gray40") +
+  geom_point(data = filter(bovini_plot, !is.na(data_uscita) & anno_uscita < 2024),
+             aes(x = data_uscita_plot, y = eta_uscita, color = stato_fine),
+             size = 2) +
+  scale_color_manual(values = c("morto" = "red", "uscito" = "blue")) +
+  labs(
+    title = "Diagramma di Lexis",
+    x = "Anno di calendario",
+    y = "Età (anni)",
+    color = "Evento finale"
+  ) +
+  theme_minimal()
+```
+
+
+## grafico lexis con evidenzazione coorte
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(lubridate)
+
+# Prepara i dati
+bovini_plot <- dt %>%
+  mutate(
+    data_uscita_plot = coalesce(data_uscita, as.Date("2024-12-31")),
+    stato_fine = case_when(
+      is.na(data_uscita) ~ "presente",
+      motivo_uscita == "M" ~ "morto",
+      TRUE ~ "uscito"
+    ),
+    eta_ingresso = as.numeric(difftime(data_ingresso, data_nascita, units = "days")) / 365.25,
+    eta_uscita   = as.numeric(difftime(data_uscita_plot, data_nascita, units = "days")) / 365.25,
+    anno_uscita  = year(data_uscita),
+    coorte       = year(data_nascita),
+    evidenziato  = ifelse(coorte == 2020, TRUE, FALSE)
+  )
+
+# Definisco i punti per la coorte 2020
+bovini_2020 <- bovini_plot %>%
+  filter(evidenziato == TRUE & !is.na(data_uscita) & anno_uscita < 2024)
+
+# Definisco la fascia della coorte 2020 come un poligono inclinato
+# Creo manualmente i vertici
+coorte_2020_polygon <- data.frame(
+  x = as.Date(c("2020-01-01", "2021-01-01", "2025-01-01", "2024-01-01")),
+  y = c(0, 0, 4, 4)  # Età corrispondente: (x - nascita) in anni
+)
+
+# Plot
+ggplot(bovini_plot) +
+  # --- Sfondo di tutti i soggetti ---
+  geom_segment(aes(x = data_ingresso, xend = data_uscita_plot,
+                   y = eta_ingresso, yend = eta_uscita),
+               color = "gray70", alpha = 0.1, size = 0.2) +
+
+  # --- Area della coorte 2020 ---
+  geom_polygon(data = coorte_2020_polygon,
+               aes(x = x, y = y),
+               fill = "steelblue", alpha = 0.1, color = "black", linetype = "dashed") +
+
+  # --- Linee dei soggetti della coorte 2020 ---
+  geom_segment(data = filter(bovini_plot, evidenziato == TRUE),
+               aes(x = data_ingresso, xend = data_uscita_plot,
+                   y = eta_ingresso, yend = eta_uscita),
+               color = "steelblue", size = 0.5) +
+
+  # --- Punti dei soggetti della coorte 2020 ---
+  geom_point(data = bovini_2020,
+             aes(x = data_uscita_plot, y = eta_uscita, shape = stato_fine, color = stato_fine),
+             size = 2) +
+
+  # --- Scale ---
+  scale_color_manual(
+    values = c("morto" = "red", "uscito" = "blue"),
+    labels = c("Morto", "Uscito"),
+    name = "Evento finale"
+  ) +
+  scale_shape_manual(
+    values = c("morto" = 4, "uscito" = 1), # croce per morto, cerchio vuoto per uscito
+    labels = c("Morto", "Uscito"),
+    name = "Evento finale"
+  ) +
+
+  labs(
+    title = "Diagramma di Lexis - Evidenziata la coorte 2020 (fascia diagonale)",
+    x = "Anno di calendario",
+    y = "Età (anni)"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "right"
+  )
+
+```
+
+
+
+## diagramma di Lexis con evidenziato il periodo
+```{r}
+lexis_highlight_periodo <- function(dt, start_date, end_date, colore = "steelblue") {
+  
+  bovini_plot <- dt %>%
+    mutate(
+      data_uscita_plot = coalesce(data_uscita, as.Date("2024-12-31")),
+      stato_fine = case_when(
+        is.na(data_uscita) ~ "presente",
+        motivo_uscita == "M" ~ "morto",
+        TRUE ~ "uscito"
+      ),
+      eta_ingresso = as.numeric(difftime(data_ingresso, data_nascita, units = "days")) / 365.25,
+      eta_uscita = as.numeric(difftime(data_uscita_plot, data_nascita, units = "days")) / 365.25,
+      anno_uscita = year(data_uscita)
+    )
+  
+  max_eta <- ceiling(max(bovini_plot$eta_uscita, na.rm = TRUE))
+  
+  periodo_polygon <- data.frame(
+    x = as.Date(c(start_date, end_date, end_date, start_date)),
+    y = c(0, 0, max_eta, max_eta)
+  )
+  
+  # Seleziona soggetti che attraversano il periodo
+  bovini_in_periodo <- bovini_plot %>%
+    filter(data_ingresso <= end_date & data_uscita_plot >= start_date & !is.na(data_uscita))
+
+  ggplot() +
+    geom_segment(data = bovini_plot,
+                 aes(x = data_ingresso, xend = data_uscita_plot,
+                     y = eta_ingresso, yend = eta_uscita),
+                 color = "gray70", alpha = 0.1, size = 0.2) +
+    
+    geom_polygon(data = periodo_polygon, aes(x = x, y = y),
+                 fill = colore, alpha = 0.1, color = "black", linetype = "dashed") +
+    
+    geom_segment(data = bovini_in_periodo,
+                 aes(x = data_ingresso, xend = data_uscita_plot,
+                     y = eta_ingresso, yend = eta_uscita),
+                 color = colore, size = 0.5) +
+    
+    geom_point(data = bovini_in_periodo,
+               aes(x = data_uscita_plot, y = eta_uscita, shape = stato_fine, color = stato_fine),
+               size = 2) +
+    
+    scale_color_manual(values = c("morto" = "red", "uscito" = "blue"), name = "Evento finale") +
+    scale_shape_manual(values = c("morto" = 4, "uscito" = 1), name = "Evento finale") +
+    
+    labs(
+      title = paste0("Diagramma di Lexis - Periodo ", start_date, " - ", end_date),
+      x = "Anno di calendario",
+      y = "Età (anni)"
+    ) +
+    theme_minimal()
+}
+lexis_highlight_periodo(dt, start_date = "2022-01-01", end_date = "2022-12-31")
+
+```
+
+
+
+
+
+## diagranna di Lexis con evidenziata la fascia di età
+```{r}
+lexis_highlight_eta <- function(dt, eta_min, eta_max, colore = "steelblue") {
+  
+  bovini_plot <- dt %>%
+    mutate(
+      data_uscita_plot = coalesce(data_uscita, as.Date("2024-12-31")),
+      stato_fine = case_when(
+        is.na(data_uscita) ~ "presente",
+        motivo_uscita == "M" ~ "morto",
+        TRUE ~ "uscito"
+      ),
+      eta_ingresso = as.numeric(difftime(data_ingresso, data_nascita, units = "days")) / 365.25,
+      eta_uscita = as.numeric(difftime(data_uscita_plot, data_nascita, units = "days")) / 365.25,
+      anno_uscita = year(data_uscita)
+    )
+  
+  # Prendi le date estreme per asse x
+  min_date <- min(bovini_plot$data_ingresso, na.rm = TRUE)
+  max_date <- max(bovini_plot$data_uscita_plot, na.rm = TRUE)
+  
+  eta_polygon <- data.frame(
+    x = as.Date(c(min_date, max_date, max_date, min_date)),
+    y = c(eta_min, eta_min, eta_max, eta_max)
+  )
+  
+  # Soggetti nella fascia di età
+  bovini_in_eta <- bovini_plot %>%
+    filter((eta_ingresso <= eta_max & eta_uscita >= eta_min) & !is.na(data_uscita))
+
+  ggplot() +
+    geom_segment(data = bovini_plot,
+                 aes(x = data_ingresso, xend = data_uscita_plot,
+                     y = eta_ingresso, yend = eta_uscita),
+                 color = "gray70", alpha = 0.1, size = 0.2) +
+    
+    geom_polygon(data = eta_polygon, aes(x = x, y = y),
+                 fill = colore, alpha = 0.1, color = "black", linetype = "dashed") +
+    
+    geom_segment(data = bovini_in_eta,
+                 aes(x = data_ingresso, xend = data_uscita_plot,
+                     y = eta_ingresso, yend = eta_uscita),
+                 color = colore, size = 0.5) +
+    
+    geom_point(data = bovini_in_eta,
+               aes(x = data_uscita_plot, y = eta_uscita, shape = stato_fine, color = stato_fine),
+               size = 2) +
+    
+    scale_color_manual(values = c("morto" = "red", "uscito" = "blue"), name = "Evento finale") +
+    scale_shape_manual(values = c("morto" = 4, "uscito" = 1), name = "Evento finale") +
+    
+    labs(
+      title = paste0("Diagramma di Lexis - Età ", eta_min, "-", eta_max, " anni"),
+      x = "Anno di calendario",
+      y = "Età (anni)"
+    ) +
+    theme_minimal()
+}
+
+
+lexis_highlight_eta(dt, eta_min = 2, eta_max = 4)
+```
+
+
+
+## Preprocessing e costruzione life table
+
+```{r}
+life_table <- function(dati, data_fine = as.Date("2024-05-27")) {
+  library(dplyr)
+  
+  dati_prep <- dati %>%
+    mutate(
+      data_fine_osservazione = pmin(coalesce(data_uscita, data_fine), data_fine),
+      morto = motivo_uscita == "M" & !is.na(data_uscita) & data_uscita <= data_fine,
+      eta_morte = as.numeric(data_fine_osservazione - data_nascita) / 365.25,
+      evento = ifelse(morto, 1, 0)
+    )
+  
+  max_eta <- floor(max(dati_prep$eta_morte, na.rm = TRUE))
+  intervalli <- 0:max_eta
+  
+  tabella <- data.frame(età = intervalli) %>%
+    rowwise() %>%
+    mutate(
+      n = sum(dati_prep$eta_morte >= età, na.rm = TRUE),
+      d = sum(
+        dati_prep$evento == 1 &
+        dati_prep$eta_morte >= età &
+        dati_prep$eta_morte < età + 1,
+        na.rm = TRUE
+      )
+    ) %>%
+    ungroup() %>%
+    mutate(
+      qx = ifelse(n > 0, d / n, 0),
+      lx = NA_real_, ex = NA_real_
+    )
+  
+  # Inizializzo lx
+  tabella$lx[1] <- 100000
+  
+  # Calcolo lx
+  for (i in 2:nrow(tabella)) {
+    tabella$lx[i] <- tabella$lx[i - 1] * (1 - tabella$qx[i - 1])
+  }
+  
+  # Calcolo ex
+  tabella <- tabella %>%
+    mutate(
+      Lx = lx - (lx * qx) / 2,
+      Tx = rev(cumsum(rev(Lx))),
+      ex = ifelse(lx > 0, Tx / lx, NA)
+    )
+  
+  # Restituisco solo le colonne richieste
+  tabella_finale <- tabella %>%
+    select(età, n, d, qx, ex)
+  
+  return(tabella_finale)
+}
+
+tabella_sopravvivenza <- life_table(dati)
+
+tabella_sopravvivenza
+
+```
+
+
+
+# grafico di qx
+
+```{r}
+ggplot(tabella_sopravvivenza, aes(x = età, y = qx)) +
+  geom_line(color = "steelblue", size = 1) +
+  geom_point(color = "steelblue", size = 2) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 0.1)) +
+  labs(
+    title = "Probabilità di morte (qₓ) per età",
+    x = "Età",
+    y = "qₓ (probabilità di morte)"
+  ) +
+  theme_minimal()
+```
+
+
+```{r}
+ggplot(tabella_sopravvivenza, aes(x = età, y = ex)) +
+  geom_line(size = 1.2, color = "#009E73") +
+  labs(
+    title = "Speranza di vita residua (ex)",
+    x = "Età (anni)",
+    y = "Anni attesi di vita"
+  ) +
+  theme_minimal()
+```
+
+
+# Analisi per coorte
+
+```{r}
+calcola_mortalita_per_coorte_temporale <- function(dati) {
+  library(dplyr)
+  library(lubridate)
+  
+  dati %>%
+    mutate(
+      anno_nascita = year(data_nascita),
+      presente = !is.na(data_ingresso),
+      morto = motivo_uscita == "M",
+      data_uscita_corr = coalesce(data_uscita, as.Date("2024-12-31")),
+      giorni_presenza = as.numeric(data_uscita_corr - data_ingresso + 1),
+      giorni_presenza = if_else(giorni_presenza > 0, giorni_presenza, 0)
+    ) %>%
+    group_by(anno_nascita) %>%
+    summarise(
+      #individui = n(),
+      presenti = sum(presente, na.rm = TRUE),
+      morti = sum(morto, na.rm = TRUE),
+      giorni_totali = sum(giorni_presenza, na.rm = TRUE),
+      anni_bovino = round(giorni_totali / 365.25, 2),
+      tasso_mortalita_temporale = round(morti / anni_bovino, 4),
+      .groups = "drop"
+    ) %>%
+    arrange(anno_nascita)
+}
+
+
+
+calcola_mortalita_per_coorte_temporale(dati)->coorti
+
+coorti
+
+```
+
+
+
+
+```{r}
+dati_surv <- dati %>%
+  mutate(
+    data_fine_osservazione = pmin(coalesce(data_uscita, as.Date("2024-05-27")), as.Date("2024-05-27")),
+    tempo = as.numeric(data_fine_osservazione - data_nascita) / 365.25,
+    evento = motivo_uscita == "M" & !is.na(data_uscita) & data_uscita <= as.Date("2024-05-27")
+  )
+
+fit <- survfit(Surv(tempo, evento) ~ 1, data = dati_surv)
+
+ggsurvplot(fit, conf.int = TRUE, risk.table = TRUE,
+           title = "Curva di sopravvivenza Kaplan-Meier",
+           xlab = "Tempo (anni)", ylab = "Probabilità di sopravvivenza",
+           palette = "#0072B2")
+```
+
+
+
+
+
+
+## Analisi Age-Period-Cohort (APC)
+
+```{r}
+data_fine <- as.Date("2024-05-27")  # Data di estrazione
+
+dati_prep <- dati %>%
+  mutate(
+    data_fine_osservazione = pmin(coalesce(data_uscita, data_fine), data_fine),
+    evento = ifelse(motivo_uscita == "M" & !is.na(data_uscita) & data_uscita <= data_fine, 1, 0),
+    eta_ingresso = as.numeric(data_ingresso - data_nascita) / 365.25,
+    eta_uscita = as.numeric(data_fine_osservazione - data_nascita) / 365.25,
+    anno_ingresso = year(data_ingresso),
+    anno_uscita = year(data_fine_osservazione)
+  )
+
+dati_long <- dati_prep %>%
+  rowwise() %>%
+  do({
+    anni <- seq(.$anno_ingresso, .$anno_uscita)
+    tibble(
+      codice_capo = .$codice_capo,
+      anno = anni,
+      eta = floor(as.numeric(as.Date(paste0(anni, "-07-01")) - .$data_nascita) / 365.25),
+      coorte = year(.$data_nascita),
+      evento = ifelse(.$evento == 1 & .$anno_uscita == anni, 1, 0)
+    )
+  }) %>%
+  ungroup()
+
+tabella_apc <- dati_long %>%
+  filter(!is.na(eta) & eta >= 0 & eta <= 15) %>%
+  group_by(eta, anno, coorte) %>%
+  summarise(
+    esposizione = n(),           # Numero di animali osservati in quell'anno/età
+    decessi = sum(evento)        # Numero di decessi in quell'anno/età
+  ) %>%
+  ungroup()
+
+
+mod_apc <- glm(decessi ~ factor(eta) + factor(anno) + factor(coorte), 
+               offset = log(esposizione), 
+               family = poisson, 
+               data = tabella_apc)
+summary(mod_apc)
+
+```
+
+## Visualizzazione effetti età, periodo, coorte
+
+```{r}
+tabella_apc <- tabella_apc %>%
+  mutate(tasso_mortalita = decessi / esposizione)
+
+ggplot(tabella_apc, aes(x = anno, y = eta, fill = tasso_mortalita)) +
+  geom_tile(color = "white") +
+  scale_fill_viridis_c(option = "inferno", trans = "sqrt") +
+  labs(
+    title = "Tasso di mortalità per Età e Periodo",
+    x = "Anno (Periodo)",
+    y = "Età (anni)",
+    fill = "Tasso mortalità"
+  ) +
+  theme_minimal()
+
+# ggsurvplot(fit, ...)
+```
+
+
+# campiono dal dataset iniziale le matricole per simulare 5 differenti allevamenti con consistenza diverse per poi applicare quanto
+visto sopra 
+```{r}
+
+set.seed(1966)
+dt %>% 
+  sample_n(459) %>% 
+  saveRDS(here("dati", "herdA"))
+ 
+dt %>% 
+sample_n(200)  %>% 
+  saveRDS(here("dati", "herdB"))
+ 
+dt %>% 
+sample_n(50) %>% 
+  saveRDS(here("dati", "herdC"))
+
+dt %>% 
+  sample_n(150) %>% 
+  saveRDS(here("dati", "herdD"))
+
+dt %>% 
+  sample_n(625) %>% 
+  saveRDS(here("dati", "herdE"))
+
+ 
+```
+
