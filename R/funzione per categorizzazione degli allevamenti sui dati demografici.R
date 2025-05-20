@@ -17,6 +17,22 @@ prep_herd <- function(dati, data_fine = as.Date("2024-05-27")) {
 }
 
 
+prep_herd(herdA)-> dfherd
+
+
+anni_osservazione <- as.numeric(difftime(max(dfherd$data_uscita, na.rm = TRUE),
+                                         min(dfherd$data_ingresso, na.rm = TRUE),
+                                         units = "days")) / 365.25
+
+n_capi <- nrow(dfherd)
+
+n_decessi <- sum(dfherd$evento == 1, na.rm = TRUE)
+
+tasso_mortalità <- (n_decessi / (n_capi * anni_osservazione)) * 100
+
+tasso_uscita <- (sum(!is.na(dfherd$data_uscita)) / (n_capi * anni_osservazione)) * 100
+
+età_media_morte <- mean(dfherd$eta_uscita[dfherd$evento == 1], na.rm = TRUE)
 
 # Funzione per analizzare un singolo allevamento
 analizza_allevamento <- function(df_allevamento) {
@@ -63,6 +79,9 @@ analizza_allevamento <- function(df_allevamento) {
     categoria = categoria
   ))
 }
+
+analizza_allevamento(dfherd)
+
 
 # Funzione per analizzare tutti gli allevamenti
 analizza_tutti_allevamenti <- function(df_completo) {
